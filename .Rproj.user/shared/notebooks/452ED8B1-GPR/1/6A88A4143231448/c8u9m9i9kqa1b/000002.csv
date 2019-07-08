@@ -1,0 +1,6 @@
+"0","# Data generation"
+"0","set.seed(42)"
+"0","actual <- 5"
+"0","x <- rnorm(100,50,10)"
+"0","y <- actual*x +10 + rnorm(100,0,10)"
+"0","plot(x,y)"

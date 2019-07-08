@@ -1,0 +1,3 @@
+"0","df %>% ggplot(aes(x = Date, y = Awareness)) + geom_line() + "
+"0","  geom_line(aes(x = df$Date, y = df$f_posterior),col = 'red') +"
+"0","  geom_ribbon(aes(x = df$Date, ymin=df$LB,ymax=df$UB), fill=""red"", alpha=""0.2"") "

@@ -1,0 +1,7 @@
+"0","sig <- 0.01"
+"0","ell <- 50"
+"0","C <- 1"
+"0","xn <- seq(0,90,length=1000)"
+"0","pred <- mu(xn,x,y,sig,ell,C)"
+"0","vn <- nu(xn,x,sig,ell,C)"
+"0","plot(x,y,xlim = c(0,90),ylim = c(0,max(y)*1.2))"

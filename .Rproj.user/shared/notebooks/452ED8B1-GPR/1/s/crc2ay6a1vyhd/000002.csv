@@ -1,0 +1,4 @@
+"0","# Covariance kernel"
+"0","cov_ker <- function(x,y,l=1){"
+"0","  return(exp(-sum((x-y)^2)/l^2))"
+"0","}"

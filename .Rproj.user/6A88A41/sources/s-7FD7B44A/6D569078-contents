@@ -1,0 +1,1032 @@
+---
+title: "Powerade report"
+author: "Horacio González Duhart, PhD"
+date: "19 March 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r, message = FALSE, echo = FALSE}
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(plotly)
+library(gridExtra)
+library(ggcorrplot)
+source('useful_functions.R')
+```
+
+# Table of contents
+
+- [Table of contents](#table-of-contents)
+- [Powerade data](#powerade-data)
+  * [Descriptive analysis](#descriptive-analysis)
+    + [Seasonality and temperature](#seasonality-and-temperature)
+    + [Price](#price)
+    + [Media spend and adstocks](#media-spend-and-adstocks)
+    + [IPS: Items per store](#ips--items-per-store)
+    + [Variables from competition](#variables-from-competition)
+- [Modelling stage](#modelling-stage)
+  * [Decomposition and base level](#decomposition-and-base-level)
+  * [ROI](#roi)
+  * [Elasticities](#elasticities)
+  * [Saturation curves](#saturation-curves)
+  * [Optimisation of media investment](#optimisation-of-media-investment)
+    + [Problem specification](#problem-specification)
+    + [Contribution maximisation](#contribution-maximisation)
+    + [From adstock to investment](#from-adstock-to-investment)
+- [Next steps](#next-steps)
+
+
+# Powerade data
+
+Here we do a MMM via DLM for Powerade data in Australia. The idea is to show the process and results that should be shown. Visualisations may be done differently, but the point is to have at least these outputs.
+
+## Descriptive analysis
+
+Data are composed of the following:
+
+1. Unit sales (in thousands) of Powerade in Australia.
+2. Price. Which is divided into prices at two different stores: Coles and Woolworth and by different SKU: 600 ml, 8, and 1 Litre. am not sure what the 8 stands for. Not only Powerade's but also Gatorade's and other 2 competitors (ST and MX).
+3. IPS, items per store, not sure what the units of this are. Also available for the competitors.
+4. Media investment: TV, OOH, search, online video, and cinema. Also available ther is limited information on competitors' spend.
+
+### Seasonality and temperature
+
+Here are the unit sales
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.width=8, fig.height=4}
+# Read data
+df <- read.csv('Powerade_data.csv')
+df$Period <- df$Period %>% as.Date(format='%d/%m/%Y')
+df$Month <- as.factor(month(df$Period))
+ 
+df %>% ggplot(aes(x = Period, y = PA_unit_cases)) + geom_line() +
+  ggtitle('Powerade Unit Sales') + xlab('Time') + ylab('Unit sales')
+```
+
+Here is the average daily temperature during the same time period. Which has a correlation of 0.53 
+```{r, echo = FALSE, fig.width=8, fig.height=4}
+df %>% ggplot(aes(x = Period, y = Temperature)) + geom_line() +
+  ggtitle('Temperature') + xlab('Time') + ylab('Celsius')
+```
+
+### Price
+
+Here are the plots for Powerade's prices seen a stime series.
+
+```{r, fig.width = 8, fig.height = 4, echo = FALSE}
+df %>% ggplot(aes(x = Period, y = PA_price_600ml_CL)) + geom_line() +
+  geom_line(aes(x = Period, y = PA_price_600ml_WW),col = 'red') +
+  ggtitle('600 ml Powerade price') +
+  xlab('Date') +
+  ylab('Price')
+
+df %>% ggplot(aes(x = Period, y = PA_price_8L_CL)) + geom_line() +
+  geom_line(aes(x = Period, y = PA_price_8L_WW),col = 'red') +
+  ggtitle('8L Powerade price') +
+  xlab('Date') +
+  ylab('Price')
+
+df %>% ggplot(aes(x = Period, y = PA_price_1L_CL)) + geom_line() +
+  ggtitle('1L Powerade price') +
+  xlab('Date') +
+  ylab('Price')
+```
+
+They are meant to be continuous variables, however, all but the 1L prices seem very much concentrated at specific values:
+
+```{r, fig.width = 8, fig.height = 8, echo = FALSE}
+plot(df$PA_price_600ml_CL,df$PA_price_600ml_WW,asp=1,
+     xlab = '600 ml Powerade price at Coles',
+     ylab = '600 ml Powerade price at WW')
+abline(v = c(2.8,3.4,4.4,5.6))
+abline(h = c(2.8,3.3,4.4,5.6))
+
+plot(df$PA_price_8L_CL,df$PA_price_8L_WW,asp=1,
+     xlab = '600 ml Powerade price at Coles',
+     ylab = '600 ml Powerade price at WW')
+abline(v = c(0.9,1.12,1.48))
+abline(h = c(1.12,1.24,1.48))
+```
+
+Nevertheless, both these variables seem to have an effect on sales, with correlations of -0.38 and -0.42 respectively, so we will continue to do so:
+```{r, fig.width = 8, fig.height = 8, echo = FALSE, message = FALSE, warning = FALSE}
+par(mfrow = c(2,1))
+plot(df$PA_price_600ml_CL,df$PA_unit_cases,xlim = c(2.5,6),xlab = '600 ml price @ CL',
+     ylab = 'Unit sales')
+plot(df$PA_price_600ml_WW,df$PA_unit_cases,xlim = c(2.5,6),xlab = '600 ml price @ WW',
+     ylab = 'Unit sales')
+
+
+par(mfrow = c(1,1))
+plot_ly(df, x = ~ PA_price_600ml_CL,
+        y = ~ PA_price_600ml_WW,
+        z = ~ PA_unit_cases,
+        marker = list(color = ~ PA_unit_cases,
+                      showscale = TRUE)) %>% 
+  layout(scene = list(xaxis = list(title = '600 ml price @ CL'),
+                      yaxis = list(title = '600 ml price @ WW'),
+                      zaxis = list(title = 'Sales'))) %>% 
+  add_markers()
+```
+
+On the other hand, the 8L prices, with correlations of 0.005 and -0.14, seem to be not working.
+```{r, fig.width = 8, fig.height = 8, echo = FALSE, message = FALSE, warning = FALSE}
+par(mfrow = c(1,1))
+plot(df$PA_price_8L_CL,df$PA_price_8L_WW,asp=1,
+     xlab = '8L Powerade price at Coles',
+     ylab = '8L Powerade price at WW')
+abline(v = c(0.9,1.12,1.48))
+abline(h = c(1.12,1.24,1.48))
+
+
+par(mfrow = c(2,1))
+plot(df$PA_price_8L_CL,df$PA_unit_cases,xlim = c(0.8,1.5),xlab = '8L price @ CL',
+     ylab = 'Unit sales')
+plot(df$PA_price_8L_WW,df$PA_unit_cases,xlim = c(0.8,1.5),xlab = '8L price @ WW',
+     ylab = 'Unit sales')
+
+
+par(mfrow = c(1,1))
+plot_ly(df, x = ~ PA_price_8L_CL,
+        y = ~ PA_price_8L_WW,
+        z = ~ PA_unit_cases,
+        marker = list(color = ~ PA_unit_cases,
+                      showscale = TRUE)) %>% 
+  layout(scene = list(xaxis = list(title = '8L price @ CL'),
+                      yaxis = list(title = '8L price @ WW'),
+                      zaxis = list(title = 'Sales'))) %>% 
+  add_markers()
+```
+
+Finally, the 1L price has a correlation of -0.15 on the existing data. 
+
+```{r, fig.width = 8, fig.height = 8, echo = FALSE, message = FALSE, warning = FALSE}
+par(mfrow = c(1,1))
+plot(df$PA_price_1L_CL[df$PA_price_1L_CL>0],
+     df$PA_unit_cases[df$PA_price_1L_CL>0],
+     xlab = '1L Powerade price at Coles',
+     ylab = 'Unit Sales')
+```
+
+It is highly likely that sales may be driven by specific SKUs and hence their characteristics dominate the measurements we do. However we cannot weight by market share nor we have the sales by SKU. Correlations are very low with competition, our first try will be to add both CL and WW for 600ml and only one variable from the rest of the competition prices.
+
+### Media spend and adstocks
+
+Here are the media efforts done by Powerade, it is not clear to me which ones are GRPs, displays, or actual money. I'll be plotting them separately.
+
+```{r, fig.width = 8, fig.height = 2,echo = FALSE, message = FALSE, warning = FALSE}
+par(mfrow = c(1,1))
+df %>% ggplot(aes(x = Period, xend = Period, y = 0, yend = Pa_TV)) +
+  geom_segment(lwd=1) +
+  ggtitle('TV GRPs') +
+  ylab('GRPs') +
+  xlab('Date')
+
+df %>% ggplot(aes(x = Period, xend = Period, y = 0, yend = Pa_OOH)) +
+  geom_segment(lwd=1) +
+  ggtitle('OOH') +
+  ylab('Investment') +
+  xlab('Date')
+
+df %>% ggplot(aes(x = Period, xend = Period, y = 0, yend = Pa_Search)) +
+  geom_segment(lwd=1) +
+  ggtitle('Search') +
+  ylab('Investment') +
+  xlab('Date')
+
+df %>% ggplot(aes(x = Period, xend = Period, y = 0, yend = Pa_OLV)) +
+  geom_segment(lwd=1) +
+  ggtitle('On-line video') +
+  ylab('Investment') +
+  xlab('Date')
+
+df %>% ggplot(aes(x = Period, xend = Period, y = 0, yend = Pa_Cinema)) +
+  geom_segment(lwd=1) +
+  ggtitle('Cinema') +
+  ylab('Investment') +
+  xlab('Date')
+```
+
+Doing some experiments, seems that the *lagged adstocks* correlate better with sales than the usual geometrically decaying adstocks. Here we see the GRPs and the adtocks for TV
+
+```{r, fig.width = 8, fig.height = 8, echo = FALSE, message = FALSE, warning = FALSE}
+p0 <- df %>% ggplot(aes(x = Period, y = PA_unit_cases)) + geom_line() +
+  ggtitle('Powerade Unit Sales') + xlab('Time') + ylab('Unit sales')
+
+p1 <- df %>% ggplot(aes(x = Period, xend = Period, y = 0, yend = Pa_TV)) +
+  geom_segment(lwd=1) +
+  ggtitle('TV GRPs') +
+  ylab('GRPs') +
+  xlab('Date')
+
+rates <- seq(0.4,0.95,length=50)
+cors <- rates %>% lapply(function(x){
+  return(cor(df$PA_unit_cases,adstocks_geom(df$Pa_TV,x)))
+}) %>% unlist()
+mr <- rates[which(cors == max(cors))]
+df$PA_TV_GeoAds <- adstocks_geom(df$Pa_TV,mr,0)
+p2 <- df %>% ggplot(aes(x = Period, xend = Period, y = 0, yend = PA_TV_GeoAds)) +
+  geom_segment(lwd=1) +
+  ggtitle('Geometrically decaying adstocks') +
+  ylab('Adstocks') +
+  xlab('Date')
+
+rates <- seq(0,1,length=1000)
+cors <- rates %>% lapply(function(x){
+  return(cor(df$PA_unit_cases,adstocks_lag(df$Pa_TV,x,3)))
+}) %>% unlist()
+
+wtf <- rates[which(cors == max(cors))]
+df$PA_TV_LagAds <- adstocks_lag(df$Pa_TV,wtf,3)
+p3 <- df %>% ggplot(aes(x = Period, xend = Period, y = 0, yend = PA_TV_LagAds)) +
+  geom_segment(lwd=1) +
+  ggtitle('Lagged adstocks') +
+  ylab('Adstocks') +
+  xlab('Date')
+
+grid.arrange(grobs = list(p0,p1,p2,p3),
+             layout_matrix = rbind(1,2,3,4))
+```
+
+Replicating the analysis, we find the best adstock parameters for each of the media efforts made by Powerade.
+
+```{r, fig.width = 8, fig.height = 8, echo = FALSE, message = FALSE, warning = FALSE}
+ooh_ads <- finding_params(df$PA_unit_cases,
+                             df$Pa_OOH,
+                             range_rate = c(0,0.99),
+                             max_theta = 5,
+                             grid_size = 1000)
+df$ooh_ads <- adstocks_lag(df$Pa_OOH,ooh_ads$rate,ooh_ads$theta)
+
+search_ads <- finding_params(df$PA_unit_cases,
+                                df$Pa_Search,
+                                range_rate = c(0,0.99),
+                                max_theta = 8,
+                                grid_size = 1000)
+df$search_ads <- adstocks_lag(df$Pa_Search,search_ads$rate,search_ads$theta)
+
+olv_ads <- finding_params(df$PA_unit_cases,
+                             df$Pa_OLV,
+                             range_rate = c(0,0.99),
+                             max_theta = 6,
+                             grid_size = 1000)
+df$olv_ads <- adstocks_lag(df$Pa_OLV,olv_ads$rate,olv_ads$theta)
+
+cinema_ads <- finding_params(df$PA_unit_cases,
+                                df$Pa_Cinema,
+                                range_rate = c(0,0.99),
+                                max_theta = 6,
+                                grid_size = 1000)
+df$cinema_ads <- adstocks_lag(df$Pa_Cinema,cinema_ads$rate,cinema_ads$theta)
+
+p11 <- df %>% ggplot(aes(x = Period, xend = Period, y = 0, 
+                         yend = Pa_OOH)) +
+  geom_segment(lwd=1) +
+  ggtitle('OOH') +
+  ylab('Investment') +
+  xlab('Date')
+
+p12 <- df %>% ggplot(aes(x = Period, xend = Period, y = 0, 
+                         yend = ooh_ads)) +
+  geom_segment(lwd=1) +
+  ggtitle('OOH adstocks') +
+  ylab('Adstocks') +
+  xlab('Date')
+
+p21 <- df %>% ggplot(aes(x = Period, xend = Period, y = 0, 
+                         yend = Pa_Search)) +
+  geom_segment(lwd=1) +
+  ggtitle('Search') +
+  ylab('Investment') +
+  xlab('Date')
+
+p22 <- df %>% ggplot(aes(x = Period, xend = Period, y = 0, 
+                         yend = search_ads)) +
+  geom_segment(lwd=1) +
+  ggtitle('Search adstocks') +
+  ylab('Adstocks') +
+  xlab('Date')
+
+p31 <- df %>% ggplot(aes(x = Period, xend = Period, y = 0, 
+                         yend = Pa_OLV)) +
+  geom_segment(lwd=1) +
+  ggtitle('On-line video') +
+  ylab('Investment') +
+  xlab('Date')
+
+p32 <- df %>% ggplot(aes(x = Period, xend = Period, y = 0, 
+                         yend = olv_ads)) +
+  geom_segment(lwd=1) +
+  ggtitle('On-line video adstocks') +
+  ylab('Adstocks') +
+  xlab('Date')
+
+p41 <- df %>% ggplot(aes(x = Period, xend = Period, y = 0, 
+                         yend = Pa_Cinema)) +
+  geom_segment(lwd=1) +
+  ggtitle('Cinema') +
+  ylab('Investment') +
+  xlab('Date')
+
+p42 <- df %>% ggplot(aes(x = Period, xend = Period, y = 0, 
+                         yend = cinema_ads)) +
+  geom_segment(lwd=1) +
+  ggtitle('Cinema adstocks') +
+  ylab('Adstocks') +
+  xlab('Date')
+
+grid.arrange(grobs = list(p11,p12,p21,p22,p31,p32,p41,p42),
+             layout_matrix = rbind(c(1,3),c(2,4),c(5,7),c(6,8)),
+             top = 'Comparison of actual media and calculated adstocks')
+```
+
+Unfortunately, TV, search, and cinema are higly correlated:
+
+```{r, fig.width = 4, fig.height = 4, echo = FALSE, message = FALSE, warning = FALSE}
+par(mfrow=c(1,1))
+df %>% select(TV = PA_TV_LagAds,Search = search_ads,Cinema = cinema_ads) %>% 
+  cor() %>% ggcorrplot(outline.color = 'white')
+```
+
+This will not help us is defiing a proper model, so we will take the first principal component.
+```{r, fig.width = 8, fig.height = 4, echo = FALSE, message = FALSE, warning = FALSE}
+TV_search_cinema <- df %>% select(PA_TV_LagAds,search_ads,cinema_ads) %>% princomp()
+df$TSC <- TV_search_cinema$scores[,1] - min(TV_search_cinema$scores[,1])
+
+df %>% ggplot(aes(x = Period, xend = Period, y = 0, 
+                         yend = TSC)) +
+  geom_segment(lwd=1) +
+  ggtitle('Principal component for TV, search, and cinema') +
+  ylab('Adstocks') +
+  xlab('Date')
+```
+
+### IPS: Items per store
+
+This is the most mysterious variable. I have no idea what this is. Correlations are below -0.07 in absolute value. Here's the plot.
+
+```{r, fig.width = 8, echo = FALSE, message = FALSE, warning = FALSE}
+df %>% ggplot(aes(x = Period, y = IPS_Pa_CL)) + geom_line() +
+  geom_line(aes(x = Period, y = IPS_Pa_WW), col = 'blue') +
+  ggtitle('IPS: CL(black) & WW (red)') +
+  xlab('Date') +
+  ylab('IPS')
+```
+
+We will not be adding these variables to the model.
+
+### Variables from competition
+
+So far, we have temperature, 5 different variables for price, and 5 media variables giving a total of 11 covariates. We will then just add one variable of price and one of media of the competition by taking the first principal component and setting the beginning, where there was no 1L information, as 0. 
+
+```{r, fig.width = 8, fig.height = 4, echo = FALSE, message = FALSE, warning = FALSE}
+df %>% ggplot(aes(x = Period, y = GA_price_600ml_CL)) + geom_line() +
+  geom_line(aes(x = Period, y = GA_price_600ml_WW)) +
+  geom_line(aes(x = Period, y = GA_price_8L_CL)) +
+  geom_line(aes(x = Period, y = GA_price_8L_WW)) +
+  geom_line(aes(x = Period, y = GA_price_1L_CL)) +
+  geom_line(aes(x = Period, y = GA_price_1L_WW)) +
+  geom_line(aes(x = Period, y = ST_price_8L_CL)) +
+  geom_line(aes(x = Period, y = ST_price_8L_WW)) +
+  geom_line(aes(x = Period, y = MX_price_1L_CL)) +
+  geom_line(aes(x = Period, y = MX_price_1L_WW)) +
+  ggtitle('All prices') +
+  xlab('Date') +
+  ylab('Price')
+
+aux <- df %>% select(GA_price_600ml_CL:MX_price_1L_WW) %>% princomp()
+df$competitor_price <- aux$scores[,1]+ aux$center[1]
+df$competitor_price <- df$competitor_price*(df$competitor_price<5)
+df %>% ggplot(aes(x = Period, y = competitor_price)) + geom_line() +
+  ggtitle('Prices first principal component') +
+  xlab('Date') +
+  ylab('Price')
+```
+
+
+We do the same with media, all of it. It so happens that it's nearly the same as just adding everything together (correlation of 0.96).
+
+```{r, fig.width = 8, fig.height = 4, echo = FALSE, message = FALSE, warning = FALSE}
+aux <- df %>% select(Ga_TVGRPs:MX_OOH) %>% princomp()
+df$competitor_media <- max(aux$scores[,1]) - aux$scores[,1]
+df %>% ggplot(aes(x = Period, xend = Period, y = 0, yend = competitor_media)) +
+  geom_segment() +
+  ggtitle('Media first principal component') +
+  xlab('Date') +
+  ylab('Media')
+
+plot(df %>% select(Ga_TVGRPs:MX_OOH) %>%apply(1,sum),df$competitor_media,asp=1,
+     xlab = 'Sum of all competitor media',
+     ylab = 'First principal component')
+abline(a=0,b=1)
+
+df$competitor_media_sum <- df %>% select(Ga_TVGRPs:MX_OOH) %>%apply(1,sum)
+df$outliers <- sign(df$PA_unit_cases - df$Temperature -150 + df$Temperature[1] > 0)
+```
+
+We will also add an indicator function stating when there is a positive price for the 1L SKU.
+
+With this, we have all our data ready to model and ready to enter the tuning phase.
+
+# Modelling stage
+
+Adding a variable for some outliers, we ended up with the following initialisation:
+
+|            Covariate           | Initial value | Discount factor |
+|:------------------------------:|---------------|:---------------:|
+|  Intercept                     | 165.2046709   |            0.95 |
+|  Powerade 600 ml price at CL   | -13           |            0.95 |
+|  Powerade 600 ml price at WW   | -10           |            0.95 |
+|  Powerade 8L price at CL       | -14           |            0.98 |
+|  Powerade 8L price at WW       | -20           |            0.98 |
+|  Powerade 1L price at CL       | -1.1          |            0.95 |
+| Temperature                    | 3             |            0.95 |
+|  OOH                           | 0.15          |            0.99 |
+|  On-line video                 | 0.25          |            0.99 |
+| TV, Search, and Cinema         | 0.0015        |            0.99 |
+|  Competitor's price            | -0.025        |            0.95 |
+|  Competitor's sum of media     | 0.003         |            0.95 |
+|  Outliers                      | 76            |            0.95 |
+
+The fit is really good, with an $R^2$ of 0.89.
+
+```{r, fig.width = 8, fig.height = 4, echo = FALSE, message = FALSE, warning = FALSE}
+decomp <- read.csv('Decomposition.csv')
+decomp <- decomp %>% select(-X)
+decomp$Period <- df$Period
+
+decomp %>% ggplot(aes(x = Period, y = Observed)) + geom_line(lwd = 1) +
+  geom_line(aes(x = Period, y = Estimated),lwd = 1, col = 'red') +
+  ggtitle('Observed vs expected') +
+  xlab('Date') +
+  ylab("Unit sales ('000)")
+
+decomp %>% ggplot(aes(x = Observed, y = Estimated)) + geom_point() +
+  ggtitle('Observed vs expected') +
+  xlab('Observed') +
+  ylab('Expected')
+```
+
+The residuals satisfy the assumption of normality, and independence 
+```{r, fig.width = 8, fig.height = 4, echo = FALSE, message = FALSE, warning = FALSE}
+decomp$Residual = decomp$Observed - decomp$Estimated
+
+decomp %>% ggplot(aes(x = Residual)) + 
+  geom_histogram(aes(y = ..density..)) +
+  stat_function(fun = dnorm, lwd = 1,
+                args = list(mean = mean(decomp$Residual), sd = sd(decomp$Residual))) +
+  ggtitle('Histogram of residuals')
+
+decomp %>% ggplot(aes(x = Residual)) + stat_ecdf(geom = "step") +
+  stat_function(fun = pnorm, lwd = 1,
+                args = list(mean = mean(decomp$Residual), sd = sd(decomp$Residual))) +
+  ggtitle('Empirical distribution function') +
+  ylab('Cumulative probability')
+
+
+decomp %>% ggplot(aes(sample = Residual)) + stat_qq() +
+  ggtitle('Q-Q plot') 
+
+aux <- acf(decomp$Residual,plot = FALSE)
+aux$acf %>% as.data.frame() %>% ggplot(aes(x = c(0:22), xend = c(0:22),
+                                           y = 0, yend = V1)) + geom_segment(lwd = 3) +
+  ggtitle('Autocorrelation of residuals') +
+  xlab('Lag') +
+  ylab('ACF')
+```
+
+This all means that we have a good model. The next step is the decomposition of sales where the explanation of how sales work happen.
+
+## Decomposition and base level
+
+Let $\hat S_t$ be the value for the additive model of sales $S_t$ for $t\in\{1,\ldots,N\}$. We will define the following concepts:
+
+1. The parameter of variable $X$ at time $t$ is simply $\beta_t^X$. We will denote by $\beta_t^0$ to the intercept.
+2. The contribution of variable $X$ at time $t$ is given by $|\beta_t^X X_t|$.
+3. The redistribution of variable $X$ at time $t$ is given by: $$R_t^X = \begin{cases}
+-\beta^X_t(\max_{s\geq 0}X_s - X_t), &\beta^X_t<0\\
+\beta^X_t(X_t - \min_{s\geq 0}X_s), &\beta^X_t\geq0\end{cases}$$
+4. The redistributed intercept is given by: $$I_t = \hat S_t - \sum_{X_t}R_t^X.$$
+5. The base level percentage contribution is given by: $$p = \frac{1}{N}\sum_{t=1}^N\frac{|I_t|}{\hat S_t}.$$
+6. The translation gap is given by: $$K = \frac{p - \frac{1}{N}\sum_{t=1}^N\frac{I_t}{\hat S_t}}{\frac{1}{N}\sum_{t=1}^N\frac{1}{\hat S_t}}.$$
+7. Define the base level as follows: $$B_t = I_t + K.$$
+8. Finally, define the decomposition as $$D_t^X = \frac{R_t^X}{\hat S_t}.$$
+
+Here is how it looks like:
+
+```{r, fig.width = 12, fig.height = 6, echo = FALSE, message = FALSE, warning = FALSE}
+betas <- read.csv('Betas.csv')
+betas <- betas %>% select(-X)
+names(betas)[1] <- 'Intercept'
+
+aux <- decomposition(df,betas,'PA_unit_cases','Period','Intercept')
+
+aux$Redistribution %>% ggplot(aes(x = Date, y = Estimated)) +
+  geom_line() +
+  geom_line(aes(x = aux$Redistribution$Date, y = aux$Base),lwd = 1) +
+  ylim(0,211) +
+  ggtitle('Base level') +
+  ylab('Sales')
+
+wf <- waterfall(aux$Decomposition,Date = 'Date')
+
+wf$Names <- c('Base',
+              'Temperature',
+              'Price 600ml CL',
+              'Price 600ml WW',
+              'Competition price',
+              'Price 1L CL',
+              'Competition media',
+              'Outliers',
+              'Price 8L WW',
+              'Price 8L CL',
+              'OOH',
+              'TV, Search & Cinema',
+              'On-line')
+
+wf %>% ggplot(aes(x = Names,
+                  xmin = id - 0.45,
+                  xmax = id + 0.45,
+                  ymin = start,
+                  ymax = end)) +
+  geom_rect() +
+  scale_x_discrete('Covariates',
+                   limits = wf$Names) +
+  ggtitle('Mean decomposition') +
+  ylab('Percentage contribution')
+```
+
+We then can see how well the base level correlates with some equity and image variables.
+
+```{r, fig.width = 12, fig.height = 12, echo = FALSE, message = FALSE, warning = FALSE}
+equity <- read.csv('decomp_perc.csv')
+equity$Date <- equity$Date %>% as.Date(format='%d/%m/%Y')
+equity <- inner_join(equity,data.frame(Date = aux$Redistribution$Date, Base = aux$Base)) %>% 
+  select(-week)
+
+equity %>% select(-Date) %>% 
+  cor() %>% ggcorrplot(outline.color = 'white')
+```
+
+```{r, fig.width = 6, fig.height = 6, echo = FALSE, message = FALSE, warning = FALSE}
+cors <- data.frame(Variable = names(equity)[2:13],
+                   Correlation = equity %>% 
+                     select(-Date) %>%
+                     cor() %>%
+                     .[-13,ncol(equity)-1])
+
+cors %>% ggplot(aes(x = Variable, xend = Variable, y = 0, yend = Correlation)) +
+  geom_segment(lwd = 1) + coord_flip() +
+  ylab('Correlation')
+```
+
+The most correlated variables are the *Power Index 2* (not sure how this was calculated) with a correlation of 0.2, followed by the attribute *Is a Brand Leader* with a correlation of 0.15. Admittedly, the correlations are not as high as we wanted, but when we see hte plot in time we see that it seems that the questionnaire metrics are very noisy:
+
+```{r, fig.width = 8, fig.height = 4, echo = FALSE, message = FALSE, warning = FALSE}
+data.frame(Date = equity$Date,
+           Base = scale(equity$Base),
+           LINT_Power_Index2_mean = scale(equity$LINT_Power_Index2_mean),
+           BL2_Is_A_Brand_Leader = scale(equity$BL2_Is_A_Brand_Leader)) %>% 
+  gather(Variable,Value,-Date) %>% ggplot(aes(x = Date, y = Value, colour = Variable)) +
+  geom_line(lwd = 1) + scale_colour_manual(values= c('red','green','blue')) +
+  ggtitle('Standardised measures against base level') +
+  xlab('Date') +
+  ylab('Value')
+```
+
+If we remove the noisy and keep the *true signal*, as we do in the *TrendAI* we see how well they actually follow each other.
+
+```{r, fig.width = 8, fig.height = 4, echo = FALSE, message = FALSE, warning = FALSE}
+equity$id <- c(1:nrow(equity))
+data.frame(Date = equity$Date,
+           Base = scale(equity$Base),
+           LINT_Power_Index2_mean = scale(predict(loess(equity$LINT_Power_Index2_mean ~ equity$id), equity$id)),
+           BL2_Is_A_Brand_Leader = scale(predict(loess(equity$BL2_Is_A_Brand_Leader ~ equity$id), equity$id))) %>% 
+  gather(Variable,Value,-Date) %>% ggplot(aes(x = Date, y = Value, colour = Variable)) +
+  geom_line(lwd = 1) + scale_colour_manual(values= c('red','green','blue')) +
+  ggtitle('Smoothed standardised measures against base level') +
+  xlab('Date') +
+  ylab('Value')
+
+data.frame(Date = equity$Date,
+           Base = scale(equity$Base),
+           LINT_Power_Index2_mean = scale(predict(loess(equity$LINT_Power_Index2_mean ~ equity$id), equity$id)),
+           BL2_Is_A_Brand_Leader = scale(predict(loess(equity$BL2_Is_A_Brand_Leader ~ equity$id), equity$id))) %>% select(-Date) %>% 
+  cor() %>% ggcorrplot(outline.color = 'white') + ggtitle('Correlations on true signal')
+
+```
+
+The correlations lifted to 0.55 and 0.37 respectively. These may now be considered as high and good correlations.
+
+## ROI
+
+It is hard to interpret the ROI numbers because of the missing units: neither prices have units nor the media efforts. Furthermore, it doesn't seem that TV investment is in the units as the rest of the efforts.
+
+```{r, fig.width = 8, fig.height = 4, echo = FALSE, message = FALSE, warning = FALSE}
+spend <- df %>% select(Pa_TV:Pa_Cinema) %>% apply(2,sum)
+spend <- data.frame(ID = 1:5,
+                    Variable = c('TV','OOH','Search','On-line video','Cinema'),
+                    Spend = spend)
+spend %>% ggplot(aes(x = ID, xmin = ID - 0.45, xmax = ID + 0.45 , ymin = rep(0,5), ymax = Spend)) +
+  geom_rect() +
+  scale_x_discrete('Media efforts',
+                   limits = spend$Variable) +
+  ggtitle('Media investment') +
+  ylab('Investment')
+```
+
+On the other hand, contributions of sales are given in thousands of unit cases, regardless of what that means they are comparable numbers.
+
+```{r, fig.width = 8, fig.height = 4, echo = FALSE, message = FALSE, warning = FALSE}
+contr <- aux$Contribution %>% select(ooh_ads:TSC) %>% apply(2,sum)
+contr <- data.frame(ID = 1:3,
+                    Variable = c('OOH','On-line video','TV/Search/Cinema'),
+                    Contribution = contr)
+contr %>% ggplot(aes(x = ID, xmin = ID - 0.45, xmax = ID + 0.45 , ymin = rep(0,3), ymax = Contribution)) +
+  geom_rect() +
+  scale_x_discrete('Media efforts',
+                   limits = contr$Variable) +
+  ggtitle('Media contribution') +
+  ylab('Unit cases')
+```
+
+The ratios are then meaningless without a dimensional analysis. Nevertheless, here they are:
+
+|            Media         | Investment    | Contribution    | ROI     |
+|:-------------------------|---------------|:---------------:|:-------:|
+|  OOH                     |  7027.54      |      373.72     |  0.0531 |
+|  On-line video           |   568.26      |       10.43     |  0.0183 |
+|  TV, Search, and Cinema  |  2767.45      |      114.61     |  0.0414 |
+
+As percentages we may find something more interesting:
+
+|            Media         | Investment share  | Contribution share |  Ratio  |
+|:-------------------------|-------------------|:------------------:|:-------:|
+|  OOH                     |  67.81%           |      74.92%        |  1.1048 |
+|  On-line video           |   5.48%           |       2.09%        |  0.3813 |
+|  TV, Search, and Cinema  |  26.70%           |      22.97%        |  0.8602 |
+
+It seems OOH is doing its part, and a case may be argued by the merged mediums, but on-line videos seem to not be contributing much. Currently, I can't find a scientific way of distributing the contribution of a principal component into the different variables from which it was created. I'm happy to distribute it in any reasonable way.
+
+## Elasticities
+
+The elasticity, or more specifically, the price elasticity, is the percentage change in sales when a change in price occurs. In our toy models we have a formula like this:
+
+$$ \hat S_t = \hat\beta_{0,t} + \hat\beta_{1,t} P_t + \hat\beta_{2,t} X_t.$$
+
+Hence, the estimate for the price elasticity at time $t$ is given by
+
+$$ \hat E_t = \frac{P_t}{\hat S_t} \frac{\partial S_t}{\partial P_t} = \frac{P_t}{\hat S_t}\hat\beta_{1,t}.$$
+
+Note that on additive models, the price elasticity depends on all other variables as well, not only price.
+
+We may see that sales are most sensible to changes in price of the 600 ml presentation at Coles.It's also worth mentioning that it seems to be a downward trend in the price elasticity of the 1 litre version.
+
+```{r, fig.width = 8, fig.height = 4, echo = FALSE, message = FALSE, warning = FALSE}
+elasticities <- aux$Contribution %>% select(PA_price_600ml_CL:PA_price_1L_CL)
+elasticities <- cbind(Period = df$Period,elasticities/aux$Contribution$Estimated)
+elasticities$PA_price_1L_CL[elasticities$PA_price_1L_CL == 0] <- NA
+elasticities <- elasticities %>% gather(SKU,Elasticity,-Period)
+elasticities$Size <- elasticities$SKU %>% lapply(function(w){
+  return(substr(w,gregexpr('_',w)[[1]][2] + 1,
+         gregexpr('_',w)[[1]][3]-1))
+}) %>% unlist()
+elasticities$Store <- elasticities$SKU %>% lapply(function(w){
+  return(substr(w,gregexpr('_',w)[[1]][3] + 1,
+                nchar(w)))
+}) %>% unlist()
+
+elasticities %>% ggplot(aes(x = Period, y = Elasticity)) +
+  geom_line() +
+  geom_smooth(se = FALSE) +
+  facet_grid(rows = vars(Size), cols = vars(Store), scales = 'free_y') +
+  ggtitle('Price elasticities') +
+  xlab('Date') +
+  ylab('Elasticity')
+```
+
+Note that the minimum price for the 600 ml SKU at Coles is 2.74, while the average is 4.48. This means there's a maximum discount of -38%. This change in price times the elasticity of -0.79 gives a sales increase of 30.7%. Our decomposition has indeed a maximum of 31.37% which is very much in line. In general, these numbers check for all SKUs' prices supporting our method of finding the decomposition.
+
+```{r, fig.width = 8, fig.height = 6, echo = FALSE, message = FALSE, warning = FALSE}
+mean_price <- df %>% select(PA_price_600ml_CL:PA_price_1L_CL) %>% apply(2,mean)
+min_price <- df %>% select(PA_price_600ml_CL:PA_price_1L_CL) %>% apply(2,min)
+max_price <- df %>% select(PA_price_600ml_CL:PA_price_1L_CL) %>% apply(2,max)
+
+summary_price <- data.frame(SKU = names(mean_price),
+                            Mean = mean_price,
+                            Minimum = min_price,
+                            Maximum = max_price)
+
+summary_price$Minimum[5] <- min(df$PA_price_1L_CL[df$PA_price_1L_CL>0])
+summary_price$Mean[5] <- mean(df$PA_price_1L_CL[df$PA_price_1L_CL>0])
+
+mean_elasticities <- elasticities %>% group_by(SKU) %>%
+  dplyr::summarise(Elasticity = mean(Elasticity,na.rm=TRUE))
+
+summary_price <- inner_join(summary_price,mean_elasticities)
+
+summary_price$Discount <- (summary_price$Minimum - summary_price$Mean)/summary_price$Mean
+summary_price$Increase <- (summary_price$Maximum - summary_price$Mean)/summary_price$Mean
+
+summary_price$Sales_increase <- summary_price$Discount * summary_price$Elasticity
+summary_price$Sales_decrease <- summary_price$Increase * summary_price$Elasticity
+
+mean_decomp <- data.frame(SKU = names(mean_price),
+  Decomposition = aux$Decomposition %>% select(PA_price_600ml_CL:PA_price_1L_CL) %>% apply(2,max))
+
+summary_price <- inner_join(summary_price,mean_decomp)
+
+summary_price$SKU <- c('600ml_CL', '600ml_WW', '8L_CL', '8L_WW', '1L_CL')
+
+summary_price %>% ggplot(aes(x = Sales_increase, y = Decomposition)) + geom_point() +
+  geom_text(aes(label=SKU),hjust=-0.1, vjust=0) +
+  ggtitle('Sales changes comparison') +
+  xlab('Maximum sales percentage change calculated from elasticities') +
+  ylab('Maximum sales percentage change calculated from decomposition') +
+  xlim(0,0.35)
+```
+
+## Saturation curves
+
+I am going to start this section by formalising the adstock procedure a bit more. Let us assume that a variable $X$ is the investment in a certain media. The assumption is that the investment at time $t$, $X_t$, will not only have an effect at time $t$ but rather at time $t$ and afterwards. These effects are what we call adstocks.
+
+Mathematically, the adstock function $A\colon[0,\infty)\to l^\infty[0,\infty)$ (i.e. maps the non-negative real numbers into the bounded sequences of non-negative real numbers). One example would be $A(100) = (100,90,81,72.9,65.61,\ldots)$ where $A(100)_{k+1} = 0.9*A(100)_{k}$ and $A(100)_1 = 100$. But any other non-negative sequence works.
+
+We apply the adstock function for each element in time for $X_t$ to get $A(X_t)$ and calculate the adstock at time $t$, $a\colon l^\infty[0,\infty)\to l^\infty[0,\infty)$ by
+$$a_t = \sum_{n = 1}^t A(X_n)_{t-n+1}.$$
+
+Generalising the above example, it is not hard to prove that if $A(x)$ is calculated such that $A(x)_1 = x$ and $A(x)_{k+1} = rA(x)_k$ then given a time series $X_t$ we can find $a_t$ recursively with the rule $a_1 = X_1$ and $a_{t+1} = ra_t + X_n$.
+
+The previous example is what we usually work with as adstocks. We are now proposing the *lagged adstock* function $A(x)$ calculated in the following way: $A(x)_t = xr^{(t-\theta)^2}$. We will call $r$ the *rate* and $\theta$ the *lag*. This implies that the adstocks may be calculated as follows:
+
+$$a_t = \sum_{n=1}^t X_nr^{(t-n+1-\theta)^2}.$$
+
+There might be a recursive formula as with the geometrically decaying adstocks, but I didn't bother to find it. However they were calculated for our real data example.
+
+We know address the saturation curve. We mean by saturation curve for media $X$ the continuous bounded monotone function  $\sigma_X\colon[0,\infty)\to[0,\infty)$ such that
+$$||(\hat\beta - \sigma_X)a|| \leq ||(\hat\beta - f)a||\quad\forall f\in \{g\in C_0[0,\infty):x<y\Rightarrow g(x)<g(y)\},$$
+for some norm, say the $2-norm$ to calculate via least squares.
+
+Since $\beta$ is evolving in time, we do expect the saturation curve to show marginal increments, otherwise we would have $\sigma_X(a_t) = \hat\beta_t a_t$ and the problem is solved. To simplify the problem, we will restrict our saturation curves to have a parametric *S-shape*:
+$$\sigma_X(x) = \frac{Lx^s}{x^s + K^s}.$$
+
+These parameters have all nice interpretations: $L$ is the maximum possible contribution, which is actually an asymptote to the saturation curve. $K$ is the value of adstocks at which we reach half the saturation point. Finally, $s$ is a shape parameter that makes the curve s-shaped or makes the saturation being reached faster.
+
+Note that we are estimating the saturation curve after estimating all the other parameters. These comes from our *modelling by parts approach* I explained in a separate set of slides.
+
+```{r, fig.width = 8, fig.height = 4, echo = FALSE, message = FALSE, warning = FALSE}
+sat_TSC <- sat_curve(df$TSC,betas$TSC,maxeval = 1e6)
+sat_ooh <- sat_curve(df$ooh_ads,betas$ooh_ads,maxeval = 1e6)
+sat_olv <- sat_curve(df$olv_ads,betas$olv_ads,maxeval = 1e6)
+
+aux$Contribution %>% ggplot(aes(x = df$TSC, y = TSC)) +
+  geom_point() +
+  stat_function(fun = sat_TSC$func, lwd = 1, col = 'red') +
+  ggtitle('Saturation curve: TV/Search/Cinema') +
+  xlab('TV/Search/Cinema Principal Component') +
+  ylab('Sales')
+    
+aux$Contribution %>% ggplot(aes(x = df$ooh_ads, y = ooh_ads)) +
+  geom_point() +
+  stat_function(fun = sat_ooh$func, lwd = 1, col = 'red') +
+  ggtitle('Saturation curve: OOH') +
+  xlab('OOH adstocks') +
+  ylab('Sales')
+
+
+aux$Contribution %>% ggplot(aes(x = df$olv_ads, y = olv_ads)) +
+  geom_point() +
+  stat_function(fun = sat_olv$func, lwd = 1, col = 'red') +
+  ggtitle('Saturation curve: On-line video') +
+  xlab('On-line video adstocks') +
+  ylab('Sales')
+```
+
+From these results, we conclude that TV, Search, and CInema still have a great potential. It'll be worth experimenting to do the investments in a non-correlated fashion to be able to split the contributions.
+
+On-line video not only is contributiong very little, but also that is as much as it will contribute. The value of on-line video may not be it big contribution but rather reaching more specific targets. I suggest to do more research on that line.
+
+OOH is the star, investment in OOH has been done very well. We should see how the optimisation procedure gives us a better way of working with the differnt media.
+
+## Optimisation of media investment
+
+This bit relies heavily on the saturation curves, so from this point on this will just be speculation since I am missing the units of the investments. The ideas still hold.
+
+### Problem specification
+
+The idea goes as follows:
+
+1. Give a weekly budget $B$.
+2. Denote by $H_k$ the saturation curve of the $k$-th media and solve the optimisation problem given by
+$$\begin{align}
+\max &\sum_{k}H_k(a_k)\\
+\text{s.t:} & \sum_{k}a_k = B.
+\end{align}$$
+3. Given the adstock level solution $a^\star_k$, find the investment $x^\star_k$ that reaches that adstock level. This may be done via some approximations detailed here some lines below.
+4. Having found $x^\star_k$ find the percentage of the investment that should be invested $\alpha_k = \frac{x^\star_k}{\sum_k x^\star_k}$.
+5. A plot $B$ vs $\alpha$ for meaningful values should help us improve the current scenario.
+
+Note that this optimisation maximises how we should distribute the budget on different media and does not addresses the issue of when it should be invested. I'm happy to listen to ideas on how to address that.
+
+### Contribution maximisation
+
+The idea of the saturation curves is that given an adstock level $a$ the evaluation at the saturation curve $H(a)$ should give us the contribution to sales. So we only need to find the the proper adstock level that maximises a budget. This is a non-linear optimisation problem with equality constraints.
+
+These saturation curves have the problem that with S-shaped functions the derivative at $0$ vanishes. Right now I have implemented a greedy algorithm to find a solution, but probably we would like to improve this.
+
+The mean for the adstock values for TV/Search/Cinema, OOH, and On-line videos are, respectively, 221, 106, and 8.3, as long they are non-zero. But when seeing it at a total, the mean is actually 232. So let's assume we want to optimise a weekly budget of 232. 
+
+```{r, fig.width = 6, fig.height = 6, echo = FALSE, message = FALSE, warning = FALSE}
+sats <- list(TSC = sat_TSC,
+             OOH = sat_ooh,
+             OLV = sat_olv)
+
+opt <- greedy(sats,B=232,LR=10,LB = c(0,0,0))
+
+opt %>% ggplot(aes(x = Adstocks, y = Contribution)) + geom_line() +
+  ggtitle('Optimal contribution')
+
+opt$TSC_percentage <- opt$TSC/pmax(1e-05,(opt %>% select(TSC:OLV) %>% apply(1,sum)))
+opt$OOH_percentage <- opt$OOH/pmax(1e-05,(opt %>% select(TSC:OLV) %>% apply(1,sum)))
+opt$OLV_percentage <- opt$OLV/pmax(1e-05,(opt %>% select(TSC:OLV) %>% apply(1,sum)))
+
+
+opt %>% select(Adstocks,TSC_percentage:OLV_percentage) %>% gather(Variable,Percentage,-Adstocks) %>% 
+  ggplot(aes(x = Adstocks, y = Percentage, colour = Variable)) + geom_line(lwd = 1) +
+  scale_colour_manual(values= c('red','green','blue')) +
+  ggtitle('Optimal contribution adstocks distribution')
+```
+
+Note that for these specific saturation curves, and levels of weekly budget we are planning, the result is to rely completely in OOH. This, although mathematically sound, may bot be a feasible answer. We then implement lower bounds to the different media:
+
+```{r, fig.width = 6, fig.height = 6, echo = FALSE, message = FALSE, warning = FALSE}
+opt <- greedy(sats,B=232,LR=10,LB = c(140,65,5))
+
+opt %>% ggplot(aes(x = Adstocks, y = Contribution)) + geom_line() +
+  ggtitle('Optimal contribution with restrictions')
+
+opt$TSC_percentage <- opt$TSC/pmax(1e-05,(opt %>% select(TSC:OLV) %>% apply(1,sum)))
+opt$OOH_percentage <- opt$OOH/pmax(1e-05,(opt %>% select(TSC:OLV) %>% apply(1,sum)))
+opt$OLV_percentage <- opt$OLV/pmax(1e-05,(opt %>% select(TSC:OLV) %>% apply(1,sum)))
+
+
+opt %>% select(Adstocks,TSC_percentage:OLV_percentage) %>% gather(Variable,Percentage,-Adstocks) %>% 
+  ggplot(aes(x = Adstocks, y = Percentage, colour = Variable)) + geom_line(lwd = 1) +
+  scale_colour_manual(values= c('red','green','blue')) +
+  ggtitle('Optimal contribution adstocks distribution with restrictions')
+```
+
+With this change, we obtain an additional contribution of 0.71 units per week, that's a total of 119 units which amounts to 0.74% of all sales. Sounds very little, but recall that most of the sales are given by base, temperature, and price.
+
+### From adstock to investment
+
+The problem addressing points 3 and 4 above is not trivial either. Here I am currently doing a lot of simplifications and approximations that I will now describe.
+
+If we were to invest only once a value of $x$ we will then have an adstock (with no lag, that is $\theta=0$) of $\tilde a = (\tilde a_1, \tilde a_2\ldots)$ adding up to $\tilde A = \sum_{t=1}^\infty \tilde a_t$. Finding this analytically is just to much work and not worth it. So I just approximated this with an integral:
+
+$$\begin{align}\tilde A & = \sum_{t=1}^\infty \tilde a_t\\
+& = x \sum_{t=1}^\infty r^{t^2}\\
+& \approx x \int_0^\infty r^{t^2} dt\\
+& = \frac{x\sqrt{\pi}}{2\sqrt{\log(r^{-1})}}.
+\end{align}$$
+
+However, if there does exist a lag $\theta$ then we note that:
+
+$$\begin{align} \int_0^\infty r^{(t-\theta)^2} dt &= \int_0^\theta r^{(t-\theta)^2} dt + \int_\theta^\infty r^{(t-\theta)^2} dt\\
+& = \int_0^\theta r^{u^2} du + \int_0^\infty r^{u^2} du\\
+& = 2\int_0^\infty r^{u^2} du - \int_\theta^\infty r^{u^2} du.
+\end{align}$$
+
+Denoting by $\zeta$ the ratio of these integrals:
+
+$$\begin{align} \zeta(r,\theta) & = \frac{\int_0^\infty r^{u^2} du}{\int_\theta^\infty r^{u^2} du}\\
+& = \left( 2\int_{\theta\sqrt{2\log(r^{-1})}}^\infty \frac{1}{\sqrt{2\pi}} e^{-\frac{u^2}{2}} du  \right)^{-1}.
+\end{align}$$
+
+We find that that the adstocks $a = (a_1,a_2,\ldots)$ adding up to $A = \sum_{t=1}^\infty a_t$ may be then *approximated* by
+
+$$A \approx x\int_0^\infty r^{(t-\theta)^2} dt = x(2-\zeta(r,\theta)^{-1}) \int_0^\infty r^{t^2} dt =
+x(2-\zeta(r,\theta)^{-1})\left( r^{(1-\theta)^2} + \frac{\sqrt{\pi}}{2\sqrt{\log(r^{-1})}}\right).$$
+
+And that's how we find the total investment $x$ from the total adstocks $A$:
+$$x = \frac{A}{(2-\zeta(r,\theta)^{-1})\left( r^{(1-\theta)^2} + \frac{\sqrt{\pi}}{2\sqrt{\log(r^{-1})}}\right)}.$$
+Naturally, if $\theta=0$ then $A = \tilde A$ and if also $r\to 0$ then $A = \tilde A = x$. This makes sense because that means there are no adstocks at all.
+
+On the other hand, if we allow $\theta\to\infty$ then $A = 2\tilde A$ which also makes sense since the adstocks accumulated to the left of $\theta$ do not exist in the $\theta=0$ case and so the adstocks are duplicating, on to the right and one to the left of time $t=\theta$.
+
+So the approximations agree with the limiting cases. We need to check how well they perform in actual data.
+
+When plotting the current investment of our Powerade exercise, we have very good approximations:
+
+```{r, fig.width = 6, fig.height = 6, echo = FALSE, message = FALSE, warning = FALSE}
+spend <- df %>% select(Pa_TV:Pa_Cinema) %>% apply(2,sum)
+spend <- data.frame(ID = 1:5,
+                    Variable = c('TV','OOH','Search','On-line video','Cinema'),
+                    Spend = spend)
+
+adstocks <- df %>% select(PA_TV_GeoAds,ooh_ads,search_ads,olv_ads,cinema_ads) %>% apply(2,sum)
+adstocks <- data.frame(ID = 1:5,
+                    Variable = c('TV','OOH','Search','On-line video','Cinema'),
+                    Adstocks = adstocks)
+
+adstocks$Spend <- spend$Spend
+
+
+adstocks$rate <- c(wtf,ooh_ads$rate,search_ads$rate,olv_ads$rate,cinema_ads$rate)
+adstocks$theta <- c(3,ooh_ads$theta,search_ads$theta,olv_ads$theta,cinema_ads$theta)
+
+adstocks$Calculated_Spend <- 1:5 %>% lapply(function(k){ 
+  return(ads2inv(adstocks$Adstocks[k],adstocks$rate[k],adstocks$theta[k]))
+}) %>% unlist()
+
+adstocks %>%  ggplot(aes(x = Spend, y = Calculated_Spend, colour = rate)) + geom_point() +
+  ggtitle('Approximation validation') +
+  geom_text(aes(label=Variable),hjust=-0.1, vjust=0) +
+  xlim(0,7500) +
+  xlab('Actual total spend') +
+  ylab('Approximated spend from adstocks')
+```
+
+To validate the approximation even further, we created random adstocks patters over a 100 period with rates over the interval $(0,1)$ and different values of theta between $0$ and $14$. Here are the results:
+
+```{r, fig.width = 6, fig.height = 6, echo = FALSE, message = FALSE, warning = FALSE}
+# Creating simulated investments
+inv <- list()
+for(k in 1:1000){
+  inv[[k]] <- rep(0,200)
+  N <- rpois(1,30)
+  sam <- sample(1:100,N)
+  for(j in sam){
+    p <- runif(1)
+    if(p<=1/3){
+      inv[[k]][j] <- rpois(1,500)
+    }else{
+      if(p<=2/3){
+        inv[[k]][j] <- rpois(1,1000)
+      }else{
+        inv[[k]][j] <- rpois(1,2000)
+      }
+    }
+
+  }
+}
+
+# Calculate the corresponding adstocks
+rate <- runif(1000)
+theta <- rpois(1000,5)
+ads <- 1:1000 %>% lapply(function(k){
+  return(adstocks_lag(inv[[k]],rate[k],theta[k]))
+})
+
+# Add everything up
+Total <- data.frame(ID = 1:1000,
+                    Investment = inv %>% lapply(sum) %>% unlist(),
+                    rate = rate,
+                    theta = theta,
+                    Adstocks = ads %>% lapply(sum) %>% unlist())
+Total$Calculated <- 1:1000 %>% lapply(function(k){
+  return(ads2inv(Total$Adstocks[k],rate[k],theta[k]))
+}) %>% unlist()
+
+# Plotting
+Total %>%  ggplot(aes(x = Investment, y = Calculated, colour = rate)) + geom_point() +
+  ggtitle('Approximation validation') +
+  stat_function(fun = function(x){return(x)}, lwd = 1, col = 'black') +
+  xlab('Actual total spend') +
+  ylab('Approximated spend from adstocks')
+```
+
+I think we need to look into what is happening in rates close to $0$, some calculation may be unstable. Otherwise it looks ok.
+
+Using our, now validated approximations, and the results from the previous section. The optimal investment (with lower restrictions) should be:
+
+
+|            Media         | Current Investment share  | Optimal investment share |
+|:-------------------------|---------------------------|:------------------------:|
+|  OOH                     |  67.81%                   |      91.44%              |
+|  On-line video           |   5.48%                   |       0.01%              |
+|  TV                      |   6.65%                   |       0.33%              |
+|  Search                  |  18.94%                   |       2.93%              |
+|  Cinema                  |   1.11%                   |       5.25%              |
+ 
+Note that it is still heavily relying on OOH. Maybe we should put higher restrictions. However, recall the units of investment are not clear at this stage. There's also the issue that I have split the contribution of TSC linearly among TV, Search, and Cinema according to their loading in the first principal component (this assumption has no mathematical defence but it does deal with the problem).
+
+# Next steps
+
+I believe these should be the results that an MMM should give. As I said in the introduction, presentation of these results may not necessarily be in this way, I am very aware that I may not be the best to create the visualisations. 
+
+From the technical point of view, there's still much to do on the optimisation side: 
+
+1. Solving the non-linear problem to find the optimal adstocks. How can we solve this problem better or faster?
+2. Passing from optimal adstocks to actual investment is now given by an approximation, but can we improve it?
+3. What about solving the question of when should the investment be done?
+
+Another technical point, is what to do with correlated variables. Here we copressed all information of TV, search, and cinema into a principal component and we know how this component affect sales. But we have no clear way of redistributing this effect o the original variables. Another idea is to use ridge regression, but that bring to the table other philosophical issues I don't want to get into in here.
+
+Finally, I'm liking these lagged adstocks, but maybe we could find some asymmetric version.
+I'm leaving these notes up to here, for now.

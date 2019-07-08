@@ -1,0 +1,2 @@
+"0","df %>% ggplot(aes(Awareness,slr_tbca)) + geom_point() +"
+"0","  stat_function(fun = function(x) {return(x)}, col = 'red',lwd = 1)"

@@ -1,0 +1,5 @@
+"0","sat1 <- aux * slope * mu_vals * (1 - mu_vals)"
+"0","sat2 <- sigmoid(mu_vals) - sigmoid(mu(0,df$adstocks, df$y,sigma,l))"
+"0","beta_aux <- (df$f_posterior - sigmoid(mu(0,df$adstocks, df$y,sigma,l)))/pmax(0.0001,df$adstocks)"
+"0","sc <- sat_curve(df$adstocks,beta_aux,maxeval = 1e6, L = 0.31)"
+"0","curve(sc$func(x),xlim = c(0,5000),col = 'blue')"

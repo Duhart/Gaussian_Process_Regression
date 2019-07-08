@@ -1,0 +1,6 @@
+"0","df %>% ggplot(aes(x = Date, xend = Date, y = 0, yend = adstocks)) +"
+"0","  geom_segment(lwd=1) +"
+"0","  geom_line(aes(x = Date, y = GRPs)) +"
+"0","  ggtitle('') +"
+"0","  ylab('Adstocks') +"
+"0","  xlab('Date')"

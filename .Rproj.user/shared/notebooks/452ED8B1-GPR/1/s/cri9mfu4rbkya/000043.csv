@@ -1,0 +1,1 @@
+"0","points(df$adstocks,df$f_posterior - sigmoid(mu(0,df$adstocks, df$y,sigma,l)),col = 'red')"

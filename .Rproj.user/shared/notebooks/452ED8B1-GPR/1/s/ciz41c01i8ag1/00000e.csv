@@ -1,0 +1,1 @@
+"0","plot(xn,dmu(xn,x,y,sig,ell),type='l',col = 'red')"

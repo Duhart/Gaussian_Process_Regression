@@ -1,0 +1,4 @@
+"0","aux <- seq(0,max(df$adstocks)*3,length = 1000)"
+"0","mu_vals <- mu(aux,df$adstocks, df$y,sigma,l)"
+"0","slope <- dmu(aux,df$adstocks,df$y,sigma,l)"
+"0","plot(aux,slope,type = 'l')"

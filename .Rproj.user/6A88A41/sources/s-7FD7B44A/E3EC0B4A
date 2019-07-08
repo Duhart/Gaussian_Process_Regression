@@ -1,0 +1,23 @@
+{
+    "collab_server" : "",
+    "contents" : "",
+    "created" : 1562322957245.000,
+    "dirty" : false,
+    "encoding" : "UTF-8",
+    "folds" : "",
+    "hash" : "1320611558",
+    "id" : "E3EC0B4A",
+    "lastKnownWriteTime" : 1562614589,
+    "last_content_update" : 1562614589743,
+    "path" : "~/Git stuff/Gaussian_Process_Regression/gpr.R",
+    "project_path" : "gpr.R",
+    "properties" : {
+        "cursorPosition" : "431,56",
+        "scrollLine" : "413",
+        "tempName" : "Untitled1"
+    },
+    "relative_order" : 1,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_source"
+}

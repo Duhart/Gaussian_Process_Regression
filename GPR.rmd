@@ -1,0 +1,491 @@
+---
+title: "Gaussian Processes Regression"
+author: "HGDMC"
+date: "28 June 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Gaussian Processes Regression
+
+Here we will develop the necessary functions to test the new model.
+
+## Load libraries
+
+The easiest way to do it will be to load the required libraries from the beginning to work with matrices (as a mathematician would do it).
+We'll figure out how to make the algorith numerically stable and efficient (as a computer scientist would do) later on if we have enough time.
+
+```{r, message = FALSE}
+# Libraries
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(nloptr)
+library(kernlab)
+source('useful_functions.R')
+```
+
+## The regression problem
+
+Recall that the problem we are trying to solve is to find a function $f\colon\mathbb R\to\mathbb R$ that helps us explain our variable $y$ with certain error. We can think of this in the following way:
+
+$$y_k = f(x_k) + \varepsilon_k.$$
+
+Where $y_k$ is the $k$-th observation, $f$ is the function that we are trying to find, $x_k$ is the value of the auxiliary independent variable for the $k$-th observation, and $\varepsilon_k$ is the $k$-th error.
+
+As we've seen before, we would like the error not to deviate much from the Normal distribution and we want the errors to be independent from each other. So, the assumption we will be making is that
+
+$$y_k|f,x_k,\sigma^2\sim N(f(x_k),\sigma^2).$$
+
+The hyperparameter $\sigma$ should depend on the sample size and the logit transformation. The maths behind this should not be very complicated but will be done in another report.
+
+## Bayesian statistics
+
+The point of the Bayesian approach to statistics is that we can always say something about the parameters we are studying with a certain degree of certainty (or rather uncertainty). Even if we have no data whatsoever, we denote our beliefs of the parameters by a *prior* distribution.
+
+In our case, we will set the *prior* as a Gaussian Process with mean function identically $0$ and covariance function $k\colon\mathbb R^p \times \mathbb R^p \to(0,1]$ given by $$k(x,x')=\exp\left\{-\frac{(x-x')^2}{\ell^2}\right\} .$$
+
+That is $$f|\mathbf x\sim\mathrel{GP}(\mathbb0,k).$$
+
+The parameter $\ell$ should be a positive number that we can interpret as how autocorrelated the series is. If $\ell\to0$ then $k(x,x')\to0$ meaning that the series is pretty much uncorrelated and today doesn't depend on what happened yesterday. This sounds like a stretch, so we might want to have a positive value of $\ell$. If $\ell\to\infty$ then $k(x,x')\to 1$ meaning all values are the same making the function constant and that is another extreme.
+
+We need a finite value of $\ell$ greater than 0. This is a hyperparameter that we need to tune. We could in principle add a prior distribution to this parameter as well, but we'll keep things simple for now and just fix it. We'll start with 1, but we need a function that calculates this kernel.
+
+
+```{r}
+# Covariance kernel
+# Inputs: x a vector of length p
+# y a vector of length p
+# l a number.
+# C a positive number
+# Outputs:
+# a number with the prior covariance of vectors x and y.
+cov_ker <- function(x,y,l=1,C=1){
+  return(C*exp(-sum((x-y)^2)/l^2))
+}
+```
+
+The next thing is observing actual data. Let's call this data $y_1,y_2\ldots,y_n$ with corresponding covariate values $x_1,x_2,\ldots,x_n$. The way in which we *update our beliefs* on the parameters is via *Bayes's Theorem*. stating that:
+
+$$p(f|\mathbf y,\mathbf x,\sigma^2)\propto p(\mathbf y|f,\mathbf x,\sigma^2)p(f|\mathbf x).$$
+
+Fortunately, the maths are all done, as we may see in __[this document](https://dukespace.lib.duke.edu/dspace/bitstream/handle/10161/16871/Futoma_duke_0066D_14502.pdf?sequence=1)__ and we'll be writing the script as we move along.
+
+## Read the data
+
+We now will be in process of trying our new model with actual data. I saved the data in my __[Git Hub profile](https://github.com/Duhart/Gaussian_Process_Regression)__ and will eventually save this notebook over there. 
+
+```{r}
+df <- read.csv('https://raw.githubusercontent.com/Duhart/Gaussian_Process_Regression/master/data.csv')
+names(df) <- c('Date','Awareness','GRPs')
+head(df)
+```
+
+## Data transformations
+
+I will then copy your functions to calculate the logit of the awareness (note that I reduced the dependency of the *math* library only to *numpy* in order to find the logarithm) that will be our variable $y$, find the best decay rate for the adstocks and calculate those adstocks to be our variable $x$.
+
+```{r}
+params <- finding_params(logit(df$Awareness),df$GRPs,c(0,0.999),max_theta = 6,grid_size = 1000)
+#df$adstocks <- adstocks_lag(df$GRPs,params$rate,params$theta)
+df$adstocks <- adstocks_geom(df$GRPs,0.79)
+df$y <- logit(df$Awareness)
+
+df %>% ggplot(aes(x = Date, y = Awareness)) + geom_line()
+df %>% ggplot(aes(x = Date, xend = Date, y = 0, yend = adstocks)) +
+  geom_segment(lwd=1) +
+  geom_line(aes(x = Date, y = GRPs)) +
+  ggtitle('') +
+  ylab('Adstocks') +
+  xlab('Date')
+
+
+```
+
+## First model: Simple Linear Regression
+
+We now have the data as we need it to proceed to modelling. We will first do a simple linear regression to have something to compare with our proposed model.
+
+```{r}
+slr <- lm(y~adstocks,data = df)
+df$slr_tbca <- sigmoid(slr$fitted.values)
+df %>% dplyr::select(Date,Awareness,slr_tbca) %>% gather(Variable,Value,-Date) %>% 
+  ggplot(aes(x = Date, y = Value, color = Variable)) + geom_line()
+df %>% ggplot(aes(Awareness,slr_tbca)) + geom_point() +
+  stat_function(fun = function(x) {return(x)}, col = 'red',lwd = 1)
+```
+
+## Second model: Gaussian Process Regression
+
+Here comes the interesting bit. I will be explaining what we need to calculate and you need to be scripting what I need to happen.
+Here we go...
+
+We first need to set $\mathbf x$ and $\mathbf y$ as vertical vectors in $\mathbb R^n$. I'll do that one. 
+
+You had previously defined the function *covariance_kernel* before which is the code for the function $k\colon\mathbb R\to\mathbb R$. With this function, we need to calculate the following two matrix functions in terms of this one.
+
+The first one receives as inputs a number and a vector (most likely the covariates as we will later see), and it's defined in the following way:
+
+$$\mathbf k\colon\mathbb R^p\times\mathbb R^{n\times p}\to\mathbb R^{1\times n}$$
+
+$$\mathbf k(x,\mathbf x)^T = \left[\begin{array}{c}
+k(x,x_1)\\
+k(x,x_2)\\
+\vdots\\
+k(x,x_n)
+\end{array}
+\right].$$
+
+```{r}
+# vector k is actually a particular case of matrix K.
+
+```
+
+The second function gives a matrix as a result. So it's very likely you'll need a nested loop to generate it.
+
+$$\mathbf K\colon\mathbb R^{N\times m}\times\mathbb R^{n\times m}\to\mathbb R^{N\times n}$$
+
+$$\mathbf K(\mathbf x,\mathbf y) = \left[\begin{array}{cccc}
+k(x_1,y_1) & k(x_1,y_2) & \cdots & k(x_1,y_n)\\
+k(x_2,y_1) & k(x_2,y_2)& \cdots & k(x_2,y_n)\\
+\vdots & \vdots & \ddots & \vdots\\
+k(x_m,y_1) & k(x_m,y_2) & \cdots & k(x_m,y_n)
+\end{array}
+\right].$$
+
+```{r}
+# matrix k
+# Inputs:
+# x: either a vector of length N or a matrix of dimensions N x m.
+# y: either a vector of length n or a matrix of dimensions n x m.
+# l: a number
+# C: a positive number
+# Outputs:
+# a matrix of dimensions N times n
+matrix_k <- function(x,y,l = 1, C = 1){
+  if(is.null(dim(x))){
+    m <- 1
+    N <- length(x)
+    n <- length(y)
+  }else{
+    m <- ncol(x)
+    N <- nrow(x)
+    n <- nrow(y)
+  }
+  res <- matrix(rep(0,N*n),nrow = N)
+  for(k in 1:N){
+    for(j in 1:n){
+      if(is.null(dim(x))){
+        res[k,j] <- cov_ker(x[k],y[j],l,C)
+      }else{
+        res[k,j] <- cov_ker(x[k,],y[j,],l,C)
+      }
+    }
+  }
+  return(res)
+}
+
+
+#### test 
+
+matrix_k(df$GRPs,df$GRPs,C=4)[1:3,1:3]
+```
+
+If you're ok so far we're half way there. We will now calculate the posterior probability of $f$ evaluated at each of the covariate values. Since all distributions here are Normal, it's natural to expect a Normal posterior.
+
+$$ f(x_k)|\mathbb y, \sigma^2 \sim N(\mu(x_k),\nu(x_k)).$$
+
+Where
+
+$$ \mu\colon\mathbb R\to\mathbb R$$
+
+$$ \mu(x) = K(x,\mathbf x)(K(\mathbf x, \mathbf x) + \sigma^2I)^{-1}\mathbf y.$$
+
+Note that in the formula there's an $x$, the point where we are evaluating; and $\mathbf x$, the vector of original values of the covariate. There are also three letter k's: $k$, the *covariance_kernel* function; $\mathbf k$, the *vector_k* function; and $K$, the *matrix_k* function. Be sure of when you're using which.
+
+I also mention a matrix $I$. This is the __[identity matrix](https://en.wikipedia.org/wiki/Identity_matrix)__ which is very easy to generate in Python. I have already calculated it down below.
+
+```{r}
+# Inputs:
+# x: a vector of length N or a matrix of dimensions N x m.
+# X: a vector of length n or a matrix of dimensions n x m.
+# y: a vector of length n.
+# sigma: a number.
+# l: a number.
+# Outputs:
+# A vector of length N 
+mu <- function(x,X,y,sigma = 1, l = 1, C = 1){
+  if(is.null(dim(X))){
+    N <- length(x)
+    n <- length(X)
+    m <- 1
+  }else{
+    N <- nrow(x)
+    n <- nrow(X)
+    m <- ncol(X)
+  }
+  res <- rep(0,N)
+  id <- diag(n)
+  A <- solve(matrix_k(X,X,l) + sigma^2 * id,y)
+  if(is.null(dim(X))){
+    res <- 1:N %>% lapply(function(j){
+      aux <- matrix_k(x[j],X,l, C) %*% A
+      return(aux[1,1])
+    }) %>% unlist()
+  }else{
+    res <- 1:N %>% lapply(function(j){
+      aux <- matrix_k(x[j,],X,l, C) %*% A
+      return(aux[1,1])
+    }) %>% unlist()
+  }
+  return(res)
+}
+
+## test
+
+mu(df$adstocks,df$adstocks,df$y,1,1)
+
+```
+
+Once you were able to solve the above coding, the following goes in the same difficulty grade.
+$$\nu:\mathbb R^{N\times p}\to[0,\infty)^{N\times N}$$
+$$\nu(x) = \mathbf k(x,x) - K(x,\mathbf x)(K(\mathbf x, \mathbf x) + \sigma^2I)^{-1}\mathbf K(x,\mathbf x)^T.$$
+
+```{r}
+# Inputs:
+# x: a vector of length N or matrix of dimensions N x m.
+# X: a vector of length n or matrix of dimensions n x m.
+# sigma: a number.
+# l: a number.
+# Outputs:
+# A vector of length N 
+nu <- function(x,X,sigma = 1, l = 1, C = 1){
+  if(is.null(dim(X))){
+    N <- length(x)
+    n <- length(X)
+    m <- 1
+  }else{
+    N <- nrow(x)
+    n <- nrow(X)
+    m <- ncol(X)
+  }
+  id <- diag(n)
+  A <- solve(matrix_k(X,X,l, C) + sigma^2 * id)
+  if(is.null(dim(X))){
+    res <- 1:N %>% lapply(function(j){
+      k <- cov_ker(x[j],x[j],l, C) # With current kernel this is always 1
+      vec_k <- matrix_k(x[j],X,l,C)
+      y <- k - vec_k %*% A %*% t(vec_k)
+      return(y[1,1])
+      }) %>% unlist()
+  }else{
+    res <- 1:N %>% lapply(function(j){
+      k <- cov_ker(x[j,],x[j,],l,C) # With current kernel this is always 1
+      vec_k <- matrix_k(x[j,],X,l,C)
+      y <- k - vec_k %*% A %*% t(vec_k)
+      return(y[1,1])
+      }) %>% unlist()
+  }
+  return(res)
+}
+```
+
+We will now define a couple of functions to evaluate the previous two $\mu$ and $\nu$ in our original data points. This is where we bring the *Gaussian Process Regression* to life!
+
+And finally run everything.
+
+```{r}
+# Some code
+# These are the hyperparameters sigma and l:
+sigma <-  0.8
+l <-  200
+C <- 1
+
+mu(df$adstocks[1],df$adstocks, df$y,sigma = 1, l = 200)
+
+
+# Calculate the posterior along with a 95% probability interval on our observations.
+df$f_posterior <-  sigmoid(mu(df$adstocks,df$adstocks, df$y,sigma,l))
+df$LB <-  sigmoid(mu(df$adstocks,df$adstocks, df$y,sigma,l) - 1.96*nu(df$adstocks,df$adstocks,sigma,l))
+df$UB <- sigmoid(mu(df$adstocks,df$adstocks, df$y,sigma,l) + 1.96*nu(df$adstocks,df$adstocks,sigma,l))
+```
+
+
+```{r}
+df %>% ggplot(aes(x = Date, y = Awareness)) + geom_line() + 
+  geom_line(aes(x = df$Date, y = df$f_posterior),col = 'red') +
+  geom_ribbon(aes(x = df$Date, ymin=df$LB,ymax=df$UB), fill="red", alpha="0.2") 
+```
+
+```{r}
+mod2 <- gausspr(df$adstocks, df$y, variance.model = TRUE)
+
+df$gpr2 <- sigmoid(predict(mod2, df$adstocks))
+df$LB2 <- sigmoid(predict(mod2, df$adstocks) - 0.5 * predict(mod2,df$adstocks, type="sdeviation"))
+df$UB2 <- sigmoid(predict(mod2, df$adstocks) + 0.5 * predict(mod2,df$adstocks, type="sdeviation"))
+  
+df %>% ggplot(aes(x = Date, y = Awareness)) + geom_line() + 
+  geom_line(aes(x = df$Date, y = df$gpr2),col = 'blue') +
+  geom_ribbon(aes(x = df$Date, ymin=df$LB2, ymax=df$UB2), fill="blue", alpha="0.2") +
+  geom_line(aes(x = df$Date, y = df$f_posterior),col = 'red') +
+  geom_ribbon(aes(x = df$Date, ymin=df$LB,ymax=df$UB), fill="red", alpha="0.2")
+```
+
+
+## Interpretability
+
+We need to find the gradient with respect to $x$ of $\mu(x)$ which is given by $\nabla_x\mu:\colon\mathbb R^p\to\mathbb R^p$:
+$$\nabla_x\mu(x) = DK(x,\mathbf x)(\mathbf K(\mathbf x,\mathbf x) + \sigma^2I)^{-1}\mathbf y.$$
+
+And the derivative of the matrix is given by the matrix $DK\colon \mathbb R^p\to \mathbb R^{p\times n}$:
+$$\frac{\partial \mathbf K(x,\mathbf x)}{\partial x} = \left(\nabla_x k(x,x_1), \nabla_x k(x,x_2),\ldots,\nabla_x k(x,x_n) \right).$$
+
+Finally, the derivative of the covariance kernel is given by its gradient $\nabla_x k(\cdot,y)\colon\mathbb R^p\to\mathbb R^p$
+$$\nabla_x k(x,y) = -\frac{2}{\ell^2}(x-y)k(x,y).$$
+
+We now write functions for all these functions:
+
+```{r}
+# The derivative of the covariance kernel
+# Inputs:
+# x: a vector of length m.
+# y: a vector of length m.
+# l: a number.
+# Outputs:
+# a vector of length m.
+dk <- function(x,y,l = 1, C = 1){
+  return(-2*C/l^2*(x-y)*cov_ker(x,y,l,C))
+}
+  
+
+# The derivative of the matrix K
+# Inputs:
+# x: a vector of length m.
+# X: a vector of length n or a matrix of dimensions n x m.
+# l: a number.
+# Outputs:
+# A matrix of dimensions p x n.
+dmatK <- function(x,X,l = 1, C = 1){
+  m <- length(x)
+  if(is.null(dim(X))){
+    n <- length(X)
+  }else{
+    n <- nrow(X)
+  }
+  res <- diag(0,nrow = m, ncol = n)
+  X <- matrix(X,ncol = m)
+  for(j in 1:n){
+    res[,j] <- dk(x,X[j,],l,C)
+  }
+  return(res)
+}
+
+
+# The derivative of mu
+# Inputs:
+# x: a vector of length N or a matrix of dimensions N x m.
+# X: a vector of length n or a matrix of dimensions n x m.
+# y: a vector of length n.
+# sigma: a number.
+# l: a number.
+# Output:
+# A matrix of dimensions N x m
+dmu <- function(x,X,y,sigma = 1, l = 1,C = 1){
+  n <- length(y)
+  if(is.null(dim(X))){
+    m <- 1
+    N <- length(x)
+  }else{
+    m <- ncol(X)
+    N <- nrow(X)
+  }
+  id <- diag(n)
+  res <- matrix(rep(0,N * m),nrow = N)
+  A <- solve(matrix_k(X,X,l,C) + sigma^2 * id,matrix(y,ncol = 1))
+  x <- matrix(x, ncol = m)
+  for(j in 1:N){
+    res[j,] <- as.numeric(dmatK(x[j,],X,l,C) %*% A)
+  }
+  return(res)
+}
+
+slope <- dmu(df$adstocks,df$adstocks,df$y,sigma,l,C)
+plot(df$Date,slope,type='l')
+```
+
+Now let's see how this look like for different values of $x$:
+
+```{r}
+aux <- seq(0,max(df$adstocks)*3,length = 1000)
+mu_vals <- mu(aux,df$adstocks, df$y,sigma,l)
+slope <- dmu(aux,df$adstocks,df$y,sigma,l)
+plot(aux,slope,type = 'l')
+
+sat1 <- aux * slope * mu_vals * (1 - mu_vals)
+sat2 <- sigmoid(mu_vals) - sigmoid(mu(0,df$adstocks, df$y,sigma,l))
+beta_aux <- (df$f_posterior - sigmoid(mu(0,df$adstocks, df$y,sigma,l)))/pmax(0.0001,df$adstocks)
+sc <- sat_curve(df$adstocks,beta_aux,maxeval = 1e6, L = 0.31)
+curve(sc$func(x),xlim = c(0,5000),col = 'blue')
+lines(aux,sat2)
+points(df$adstocks,df$f_posterior - sigmoid(mu(0,df$adstocks, df$y,sigma,l)),col = 'red')
+#lines(aux,sat2,col='red')
+max(sat2)
+```
+
+# Simpler example
+
+Let's compare a GPR against a SLR on a SLR created model.
+
+
+```{r}
+# Data generation
+set.seed(42)
+actual <- 5
+x <- rnorm(100,50,10)
+y <- actual*x +10 + rnorm(100,0,10)
+plot(x,y)
+```
+
+```{r}
+sig <- 0.01
+ell <- 50
+C <- 1
+xn <- seq(0,90,length=1000)
+pred <- mu(xn,x,y,sig,ell,C)
+vn <- nu(xn,x,sig,ell,C)
+plot(x,y,xlim = c(0,90),ylim = c(0,max(y)*1.2))
+lines(xn,pred,type='l',col='red')
+lines(xn,pred - 1.96 * sqrt(vn),type='l',col='red',lty=2)
+lines(xn,pred + 1.96 * sqrt(vn),type='l',col='red',lty=2)
+plot(y,mu(x,x,y,sig,ell,C))
+plot(xn,vn,type='l')
+```
+
+This looks very weird. It's not finding the proposed line. The derivative looks like this:
+
+```{r}
+plot(xn,dmu(xn,x,y,sig,ell,C),type='l',col = 'red')
+abline(h = actual)
+min(vn)
+```
+
+## Package *kernelab*
+```{r}
+foo <- gausspr(x, y, variance.model = TRUE)
+foo
+
+ytest <- predict(foo, xn)
+plot(x, y)
+lines(xn, ytest, col="red")
+lines(xn,
+      ytest + 0.1 * predict(foo,xn, type="sdeviation"),
+      col="red", lty = 2)
+lines(xn,
+      ytest - 0.1 * predict(foo,xn, type="sdeviation"),
+      col="red", lty = 2)
+
+```

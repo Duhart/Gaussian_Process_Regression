@@ -1,0 +1,4 @@
+"0","slr <- lm(y~adstocks,data = df)"
+"0","df$slr_tbca <- sigmoid(slr$fitted.values)"
+"0","df %>% dplyr::select(Date,Awareness,slr_tbca) %>% gather(Variable,Value,-Date) %>% "
+"0","  ggplot(aes(x = Date, y = Value, color = Variable)) + geom_line()"

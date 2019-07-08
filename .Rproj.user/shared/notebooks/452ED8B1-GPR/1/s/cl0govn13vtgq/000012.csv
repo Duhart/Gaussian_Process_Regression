@@ -1,0 +1,5 @@
+"0","params <- finding_params(logit(df$Awareness),df$GRPs,c(0,0.999),max_theta = 6,grid_size = 1000)"
+"0","#df$adstocks <- adstocks_lag(df$GRPs,params$rate,params$theta)"
+"0","df$adstocks <- adstocks_geom(df$GRPs,0.79)"
+"0","df$y <- logit(df$Awareness)"
+"0","df %>% ggplot(aes(x = Date, y = Awareness)) + geom_line()"

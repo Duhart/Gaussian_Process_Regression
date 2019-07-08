@@ -1,0 +1,1 @@
+"0","lines(xn,pred - 1.96 * sqrt(vn),type='l',col='red',lty=2)"

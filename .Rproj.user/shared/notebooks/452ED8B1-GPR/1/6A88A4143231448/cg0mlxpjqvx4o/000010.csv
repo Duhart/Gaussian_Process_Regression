@@ -1,0 +1,3 @@
+"0","lines(xn,"
+"0","      ytest - 0.1 * predict(foo,xn, type=""sdeviation""),"
+"0","      col=""red"", lty = 2)"

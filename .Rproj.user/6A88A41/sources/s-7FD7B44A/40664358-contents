@@ -1,0 +1,434 @@
+---
+title: "Adding a new product to a competitive set"
+author: "HGDMC"
+date: "23 February 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo = FALSE, warning = FALSE, message = FALSE}
+library(dplyr)
+library(deldir)
+library(ptinpoly)
+```
+
+# Generalising a discrete function
+
+The problem goes as follows:
+
+We have a competitive set $A = \{x_1,x_2,\ldots,x_n\}$ with a probability of being bought (i.e. market share) $\mathbf p = \{p_1,p_2,\ldots,p_k\}$. 
+
+We want to introduce a new product, say product $x$ and we want to find how the probabilities change. Here are some ideas:
+
+### Embbeding space
+
+The first thing to do is to embbed the product into $\mathbb R^2$ and find and define $r>0$ to be a radius that make all elements in $D = \{x\in\mathbb R^2: ||x-x_0||_2\leq r\}$ may be considered in a new potential competitive set. In particular $A\subset D$ since all current competitive products will continue to be part of a new competitive set. 
+
+I'll assume the embedding is already done, and let's use the following competitive set as an example:
+
+```{r}
+# Setting a seed
+set.seed(25)
+
+# Generate a random competitive set of n elements
+N <- 10
+x <- runif(N,0,10)
+y <- runif(N,0,10)
+A <- list()
+for(k in 1:N){
+  A[[k]] <- data.frame(Product = paste0('x_',k),
+                       x = x[k],
+                       y = y[k])
+}
+A <- do.call(rbind,A)
+A$Product <- as.character(A$Product)
+
+plot(x,y,pch=15)
+
+# Let's generate a market share
+p <- runif(N,0,1)
+p <- p/sum(p)
+
+# It looks like this
+barplot(p,names.arg = A$Product)
+```
+
+Now let's calculate the centre and define the radius of competitiveness 
+```{r, fig.height=8, fig.width=8}
+centre <- c(mean(A$x),mean(A$y))
+d <- A %>% select(x,y) %>% apply(1,function(row){
+  return(sqrt((row[1]-centre[1])^2 + (row[2]-centre[2])^2))
+})
+r <- max(d)*1.1
+
+xx <- centre[1] + r*cos( seq(0,2*pi, length.out=1000) )
+yy <- centre[2] + r*sin( seq(0,2*pi, length.out=1000) )
+
+plot(x,y,pch=15,xlim = c(min(xx),max(xx)), ylim = c(min(yy),max(yy)),
+     main = 'Competitive set and disk')
+lines(xx,yy, col='blue')
+points(centre[1],centre[2],col = 'red', pch = 15)
+```
+
+Now, the points inside the disk can be divided in 2: the ones inside the convex hull of $A$, let's call this set $c(A)$ and the ones outside of it, that is $D = c(A) \cup (D\setminus c(A))$.
+
+```{r, fig.height=8, fig.width=8}
+# Get the convex hull of set A
+hpts <- chull(A$x,A$y)
+hpts <- c(hpts, hpts[1])
+c_A <- A[hpts,]
+
+# Plot
+plot(x,y,pch=15,xlim = c(min(xx),max(xx)), ylim = c(min(yy),max(yy)),
+     main = 'In and out of the convex hull')
+polygon(xx,yy,col= rgb(1,1,0,0.3))
+polygon(c_A$x,c_A$y,col=rgb(1,0,0,0.3))
+```
+
+### Inside the convex hull
+
+We now extend the vector $\mathbf p$ to a function $p\colon \mathbb R^2\to[0,\infty)$ as follows:
+
+For the points inside the convex hull, say $x\in c(A)$ we first need to find a convex combination of the elements of $A$ that give $x$:
+
+$$\mathbf x = \sum_{\mathbf x_k\in A}\alpha_k x_k,$$
+
+This happens to be not a trivial problem. What we will do first is triangulate the convex hull via the Delunay triangulation.
+
+```{r, fig.height=8, fig.width=8, message = FALSE}
+# Get the triangulation
+grid <- deldir(A$x,A$y,z=p)
+
+# Plot
+plot(x,y,pch=15,xlim = c(min(xx),max(xx)), ylim = c(min(yy),max(yy)),
+     main = 'Triangulation of the convex hull')
+polygon(xx,yy,col= rgb(1,1,0,0.3))
+polygon(c_A$x,c_A$y,col=rgb(1,0,0,0.3))
+plot(grid,add = TRUE,wlines = 'triang')
+```
+
+Triangulations are not unique, however particular triangulation has the property that none of the poits are inside of any of the circumcirles of the triangles in the triangulation. The idea is that we want to calculate the function of a point $x$ in the convex hull with the points closest to it, this is not necessarily that one because that restriction may mean a different triangulation for each point. Some here we take the decision to take this triangulation.
+
+The next step is to find the unique triangle $T_x$ such that $\mathbf x\in T_x$ and define the convex combination as
+$$\mathbf x = \sum_{\mathbf x_k\in T_x}\alpha_k \mathbf x_k.$$
+
+```{r, message = FALSE}
+# Function to test if a point is enclosed by a triangle
+is_in <- function(triang,point){
+  test <- pip2d(as.matrix(triang),rbind(point))
+  res <- FALSE
+  if(test >= 0) res <- TRUE
+  return(res)
+}
+
+# Function to see in what triangle the point is in.
+what_triang <- function(triangles,point){
+  n <- length(triangles)
+  found <- FALSE
+  k <- 0
+  while(!found){
+    k <- k + 1
+    found <- is_in(triangles[[k]][,2:3],point)
+  }
+  return(k)
+}
+
+# Function to find the convex combination of the point.
+# This is fully determined since it's a triangle.
+convex_weights <- function(triangle,point){
+  A <- as.matrix(rbind(t(triangle),rep(1,3)))
+  b <- c(point,1)
+  return(solve(A,b))
+}
+```
+
+No that we find the convex combination we simply interpolate the values of $\mathbf p$ with those weights.
+$$p(\mathbf x) = \sum_{\mathbf x_k\in T_x}\alpha_k p_k.$$
+
+Let see an example:
+```{r, fig.height=8, fig.width=8, message = FALSE}
+# Get the triangles list
+triangles <- triang.list(grid)
+
+# What triangle is the centre in?
+num <- what_triang(triangles,centre)
+print(paste0('The centre is at triangle number ',num))
+
+# What is the linear combination of that triangle that gives the centre?
+cw <- convex_weights(triangles[[num]][,2:3],centre)
+print(paste0('The convex combination weights are ',cw[1],', ',cw[2],', and ',cw[3]))
+
+# What is then the value we should assign to p at the centre?
+p_centre <- sum(cw*triangles[[num]]$z)
+print(paste0('The extended function evaluated at the centre is ',p_centre))
+
+# Plots
+plot(x,y,pch=15,xlim = c(min(xx),max(xx)), ylim = c(min(yy),max(yy)),
+     main = 'Triangle of the centre')
+polygon(xx,yy,col= rgb(1,1,0,0.3))
+polygon(c_A$x,c_A$y,col=rgb(1,0,0,0.3))
+polygon(c(triangles[[num]]$x,triangles[[num]]$x[1]),
+        c(triangles[[num]]$y,triangles[[num]]$y[1]),
+        col = rgb(0,0,1,0.8))
+points(centre[1],centre[2],col = 'red',pch = 15)
+
+barplot(c(triangles[[num]]$z,p_centre),
+        names.arg = c('x_in_T_1','x_in_T_2','x_in_T_3','Centre'),
+        main = 'Extended probability function')
+```
+
+### Outside the convex hull
+
+Now we address the issue of what to do outside the hull. If it's ouside the disk then the extended probability should be zero because it doesn't have potential to be in the competitive set.
+
+If it's inside the disk but outside the hull, then we should interpolate again. My proposal is the following: transport the values of the boundary of the hull radially to the disk where the value should be zero.
+
+In this way we'll have a continuous extended probability function, that will not be a probability density. In the following plot, we show the point outside the hull in a red trinagle, the centre as a small circle in red, the closesest point in the boundary of the disk in a red triangle, and also in a red triangle the point in the boundary of the hall with which we will interpolate.
+
+```{r, fig.height=8, fig.width=8, message = FALSE}
+# Generate a point in the disk outside the convex hull
+set.seed(25)
+eps <- 0.05 # Close to 0 to be close to the disk
+out <- sample(1:1000,2,replace = TRUE)
+point <- (1 - eps) * c(xx[out[1]],xx[out[2]]) + eps * centre
+
+# Function to check if it's inside the disk.
+in_disk <- function(point,radius,centre){
+  res <- FALSE
+  if(sqrt(sum((point - centre)^2)) < radius){
+    res <- TRUE
+  }
+  return(res)
+}
+
+# Checking it's inside the disk
+test <- in_disk(point,r,centre)
+cat(paste0('Test is TRUE if the point is inside the disk.\nValue of test: ',test))
+
+# Checking it's outside the convex hull
+m <- nrow(c_A)-1
+test <- pip2d(as.matrix(c_A[m:1,2:3]),rbind(point))
+cat(paste0('Test is -1 if the point is outside the convex hull.\nValue of test: ',test))
+
+
+# Function to find the closest point in the disk's boundary to the point
+close_disk <- function(point,radius,centre){
+  v <- point - centre
+  vn <- sqrt(sum(v*v))
+  out <- centre + v/vn*radius
+  return(out)
+}
+bound <- close_disk(point,r,centre)
+
+# This function finds the distance from a point to a line given by two points.
+# It also gives back the point in the line closest to the point and
+# if lambda is between 0 and 1 the closest point is between the points
+# that define the line, otherwise the point is outside.
+proyection <- function(line,point){
+  u <- point - line[1,]
+  v <- line[2,] - line[1,]
+  lambda <- sum(u*v)/sum(v*v)
+  dv <- u - lambda*v
+  d <- sqrt(sum(dv*dv))
+  res <- list('point' = line[1,] + lambda*v,
+              'distance' = d,
+              'lambda' = lambda)
+  return(res)
+}
+
+# Function that finds the point in the boundary of the hall that intersects
+# the radial segment of the point
+radial_bound <- function(polygon,point,centre,radius){
+  m <- nrow(polygon) - 1
+  # Line equation of radial line
+  dir_rad <- point - centre
+  n_rad <-  rev(dir_rad/sqrt(sum(dir_rad * dir_rad))) * c(1,-1)
+  c_rad <- sum(point * n_rad)
+  
+  # Intersect with each side
+  d <- Inf
+  for(k in 1:m){
+    # Line equation of polygon side
+    dir_side <- as.numeric(polygon[k,c('x','y')] - 
+                           polygon[k+1,c('x','y')])
+    n_side <- rev(dir_side/sqrt(sum(dir_side*dir_side))) * c(1,-1)
+    c_side <- sum(polygon[k,c('x','y')] * n_side)
+    
+    # Intersect
+    M <- rbind(n_side,n_rad)
+    aux <- tryCatch(solve(M,c(c_side,c_rad)),
+                    error = function(e) return(c(Inf,Inf)))
+    d_new <- sqrt(sum((aux - point)^2))
+    
+    # Check the point is in the convex hull
+    test <- -1
+    if(d_new < Inf){
+      test <- pip2d(as.matrix(polygon[m:1,c('x','y')]),rbind(aux))
+    }
+
+    # Update result
+    if(d_new < d & test >= 0){
+      d <- d_new
+      hull <- aux
+      disk <- close_disk(point,radius,centre)
+    }
+  }
+  d1 <- sqrt(sum((point - hull)^2))
+  d2 <- sqrt(sum((disk - hull)^2))
+  lambda <- 1 - d1/d2
+  return(list(hull = hull,
+              disk = disk,
+              lambda = c(lambda,1-lambda)))
+}
+to_interpolate <- radial_bound(c_A,point,centre,r)
+
+# Plot
+plot(A$x,A$y,pch=15,xlim = c(min(xx),max(xx)), ylim = c(min(yy),max(yy)),
+     main = 'Points for interpolation')
+polygon(xx,yy,col= rgb(1,1,0,0.3))
+polygon(c_A$x,c_A$y,col=rgb(1,0,0,0.3))
+points(centre[1],centre[2],col='red')
+points(point[1],point[2],col='red',pch = 2)
+points(c(to_interpolate$disk[1], to_interpolate$hull[1]),
+       c(to_interpolate$disk[2], to_interpolate$hull[2]),
+       col = 'red',pch = 17)
+segments(x0 = to_interpolate$disk[1], y0 = to_interpolate$disk[2],
+         x1 = to_interpolate$hull[1], y1 = to_interpolate$hull[2])
+```
+
+### Joining the inside and the ouside
+
+Now that we have the interpolating points, we just calculate the extended function.
+
+```{r}
+# This the function that calculates everything.
+# I can definitely make it work faster, but here it is for now.
+p_extended <- function(set,probs,eval_p,radius = NULL){
+  #browser()
+  # Get convex hull
+  hpts <- chull(set$x,set$y)
+  hpts <- c(hpts, hpts[1])
+  ch <- set[hpts,]
+  
+  # Sides in the convex hull
+  m <- nrow(ch) - 1
+  
+  # Get the triangulation
+  grid <- deldir(set$x,set$y,z=probs)
+  
+  # Get the triangles list
+  triangles <- triang.list(grid)
+  
+  # Number of points
+  N <- nrow(eval_p)
+  
+  # Find the centre
+  centre <- apply(set[,c('x','y')],2,mean)
+  
+  # Find the radius
+  if(is.null(radius)){
+    d <- set %>% select(x,y) %>% apply(1,function(row){
+      return(sqrt((row[1]-centre[1])^2 + (row[2]-centre[2])^2))
+    })
+    radius <- max(d)*1.1
+  }
+  
+  # Evaluate at each point
+  res <- rep(0,N)
+  for(k in 1:N){
+    # Check if it's in the disk
+    disk_test <- in_disk(eval_p[k,],radius,centre)
+    if(disk_test){
+      # Check if it's in convex hull
+      hull_test <- pip2d(as.matrix(ch[m:1,c('x','y')]),rbind(eval_p[k,]))
+      if(hull_test >= 0){
+        # Evaluate inside:
+        # Find triangle
+        num <- what_triang(triangles,eval_p[k,])
+        
+        # Find convex weights
+        cw <- convex_weights(triangles[[num]][,c('x','y')],eval_p[k,])
+        
+        # Find extended probability
+        res[k] <- sum(cw*triangles[[num]]$z)
+        
+      }else{
+        # Evaluate outside:
+        # Find points to interpolate
+        to_interpolate <- radial_bound(ch,eval_p[k,],centre,radius)
+        
+        # Evaluate inside the point in the convex hull.
+        # Make the point a bit more to the centre for numerical stability
+        aux <- to_interpolate$hull*0.99 + centre*0.01
+        
+        # There should be only one recursion.
+        p_hull <- p_extended(set,probs,rbind(aux),radius)
+        
+        # Find extended probability
+        res[k] <- to_interpolate$lambda[1] * p_hull
+      }
+    }
+  }
+  return(as.numeric(res))
+}
+```
+
+To test it, we are going to plot it. Here we go...
+We come from a discrete probability mass function that looks like this:
+
+
+```{r, fig.height=8, fig.width=8, message = FALSE}
+plot(xx,yy,type='l',xlab = 'x', ylab = 'y', 
+     main = 'Discrete probability mass function',asp = 1)
+symbols(A$x,A$y,p,inches = 0.25, bg = 'black',add = TRUE)
+lines(c_A$x,c_A$y)
+plot(grid,add = TRUE,wlines = 'triang')
+```
+
+To the continuous extended probability function looking like this:
+```{r, fig.height=8, fig.width=8, message = FALSE}
+# Populate the data
+N <- 100
+grid2 <- expand.grid(list(x1 = seq(min(xx),max(xx),length = N),
+                         x2 = seq(min(yy),max(yy),length = N)))
+surface <-  p_extended(A,p,grid2,r)
+
+# Do the plot
+image(seq(min(xx),max(xx),length = N),
+      seq(min(yy),max(yy),length = N),
+      matrix(surface,ncol = N),
+      col = rev(heat.colors(15)),
+      xlab = 'x',ylab = 'y', main = 'Continuous extended probability function', asp = 1,
+      xlim = c(min(xx),max(xx)), ylim = c(min(yy),max(yy)))
+
+points(A$x,A$y,pch=15)
+lines(xx,yy)
+lines(c_A$x,c_A$y)
+plot(grid,add = TRUE,wlines = 'triang')
+
+contour(x = seq(min(xx),max(xx),length = N),
+        y = seq(min(yy),max(yy),length = N),
+        z = matrix(surface,ncol = N),
+        add = TRUE)
+```
+
+### Final comments
+
+We can see that there are three main points where the peaks of the probability mass function has the higher values, these are well represeneted in the contour plots as well.
+
+As I've said before, this is not a density function, we would have to integrate it and normalise, but this is not necessary for the application. What we just need to do is evaluate in the current competitive set and maybe a couple more of new products and normalise over that finite set.
+
+Pros:
+
+1. It looks pro.
+2. No one is doing this.
+3. It takes into account the actual configuration of the market.
+
+Cons:
+
+1. It is still not true. Truth be told, no one knows what will happen if there's a new product in market.
+2. It'll be very sensitive to the embedding, and the parameters such as the radius.
+3. It needs to be done in 2D, the complexity solving this same problem in higher dimensions grows seriously fast.
